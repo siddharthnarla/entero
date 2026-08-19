@@ -6,16 +6,18 @@ const CACHE_MS = 10 * 60 * 1000; // 10 minutes
 // Preference order. First match against the live model list wins.
 // Substring matching, so version bumps (e.g. 3.3 -> 3.4) still match.
 const PREFERENCES = [
+  'gpt-oss-120b',
+  'gpt-oss',
   'llama-3.3-70b',
   'llama-3.1-70b',
   'llama-3.3',
   'llama-3.1',
   'llama3-70b',
   'llama-4',
-  'qwen',
   'gemma2',
   'gemma',
   'mixtral',
+  'qwen',
   'llama'
 ];
 
@@ -76,16 +78,33 @@ export default async function handler(req, res) {
   const { messages, max_tokens } = req.body || {};
   if (!messages) return res.status(400).json({ error: { message: 'No messages provided' } });
 
+  // Reasoning models (qwen, deepseek-r1) emit <think> blocks. Strip them so
+  // the app never shows chain-of-thought and JSON parsing stays clean.
+  function stripThinking(data) {
+    const msg = data?.choices?.[0]?.message;
+    if (!msg || typeof msg.content !== 'string') return data;
+    let text = msg.content;
+    text = text.replace(/<think>[\s\S]*?<\/think>/gi, '');
+    // Unclosed <think> means the model ran out of tokens mid-reasoning.
+    if (/<think>/i.test(text)) text = text.replace(/<think>[\s\S]*$/i, '');
+    msg.content = text.trim();
+    return data;
+  }
+
   async function send(model) {
+    // Reasoning models spend budget on hidden thinking, so give extra headroom.
+    const isReasoner = /qwen|deepseek|-r1/i.test(model);
+    const budget = (max_tokens || 1000) + (isReasoner ? 2000 : 0);
     const r = await fetch('https://api.groq.com/openai/v1/chat/completions', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         'Authorization': `Bearer ${key}`
       },
-      body: JSON.stringify({ model, messages, max_tokens: max_tokens || 1000 })
+      body: JSON.stringify({ model, messages, max_tokens: budget })
     });
-    return { ok: r.ok, status: r.status, data: await r.json() };
+    const data = await r.json();
+    return { ok: r.ok, status: r.status, data: r.ok ? stripThinking(data) : data };
   }
 
   try {
