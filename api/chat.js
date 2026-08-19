@@ -128,6 +128,15 @@ export default async function handler(req, res) {
       .replace(/`{1,3}([^`]+)`{1,3}/g, '$1')
       .replace(/^\s*[-*_]{3,}\s*$/gm, '')
       .replace(/^\s*[-*+]\s+/gm, '\u2022 ')
+      // Numbered lists inlined into a paragraph -> own lines.
+      // Requires a capital letter after, so decimals ("3.5 g/dL", "CRP 8.2")
+      // and dotted abbreviations are never split.
+      .replace(/([.!?:;)a-z])\s+(\d{1,2}\.\s+[A-Z])/g, '$1\n$2')
+      // Bullets inlined mid-paragraph -> own lines.
+      .replace(/([.!?:;)a-z])\s+(\u2022\s)/g, '$1\n$2')
+      // No blank lines between consecutive list items.
+      .replace(/(\u2022 [^\n]*)\n\n+(?=\u2022 )/g, '$1\n')
+      .replace(/(^\d+\. [^\n]*)\n\n+(?=\d+\. )/gm, '$1\n')
       .replace(/\n{3,}/g, '\n\n')
       .trim();
   }
