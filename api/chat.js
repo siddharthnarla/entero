@@ -87,7 +87,10 @@ export default async function handler(req, res) {
     const rule = 'Format your reply as plain conversational prose. Do not use markdown: '
       + 'no tables, no pipe characters, no asterisks for bold or italics, no hash headers, '
       + 'no code fences, no horizontal rules. Use short paragraphs. If you need a list, '
-      + 'write each item on its own line starting with a dash.';
+      + 'write each item on its own line starting with a dash. '
+      + 'Length should match the question: answer simple questions in two or three sentences, '
+      + 'and go longer only when the topic genuinely needs it. Do not pad with restatements, '
+      + 'and always finish your final sentence rather than trailing off.';
     const copy = messages.map(m => ({ ...m }));
     const sys = copy.find(m => m.role === 'system');
     if (sys) sys.content = sys.content + '\n\n' + rule;
@@ -141,17 +144,38 @@ export default async function handler(req, res) {
       .trim();
   }
 
+  // If the model hit the token ceiling it stops mid-word. Cut back to the
+  // last complete sentence so the reply always ends cleanly.
+  function trimToSentence(text) {
+    const t = text.trimEnd();
+    if (/[.!?:)\]"\u2019\u201d]$/.test(t)) return t;
+    const cut = Math.max(
+      t.lastIndexOf('. '), t.lastIndexOf('! '), t.lastIndexOf('? '),
+      t.lastIndexOf('.\n'), t.lastIndexOf('!\n'), t.lastIndexOf('?\n')
+    );
+    // Only trim if we keep most of the answer, otherwise leave it alone.
+    if (cut > t.length * 0.5) return t.slice(0, cut + 1);
+    return t;
+  }
+
   function cleanResponse(data) {
     const msg = data?.choices?.[0]?.message;
     if (!msg || typeof msg.content !== 'string') return data;
-    msg.content = stripMarkdown(stripThinking(msg.content)).trim();
+    let text = stripMarkdown(stripThinking(msg.content)).trim();
+    const truncated = data?.choices?.[0]?.finish_reason === 'length';
+    // Never trim JSON payloads - the prep-step formatter needs them intact.
+    const isJson = text.startsWith('[') || text.startsWith('{');
+    if (truncated && !isJson) text = trimToSentence(text);
+    msg.content = text;
     return data;
   }
 
   async function send(model) {
     // Reasoning models spend budget on hidden thinking, so give extra headroom.
     const isReasoner = /qwen|deepseek|-r1/i.test(model);
-    const budget = (max_tokens || 1000) + (isReasoner ? 2000 : 0);
+    // Floor of 1600 so answers finish; JSON tasks get room to close the array.
+    const requested = Math.max(max_tokens || 1000, 1600);
+    const budget = requested + (isReasoner ? 2500 : 0);
     const r = await fetch('https://api.groq.com/openai/v1/chat/completions', {
       method: 'POST',
       headers: {
